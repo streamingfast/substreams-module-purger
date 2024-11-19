@@ -18,12 +18,11 @@ func (m *ModuleCache) String() string {
 }
 
 func ModulesToPurge(db *sqlx.DB, subfolder string) ([]*ModuleCache, error) {
-	fmt.Println("Querying ModuleCache to purge")
 	var modules []*ModuleCache
 
 	err := db.Select(&modules, purgeModuleQuery(subfolder))
 	if err != nil {
-		return nil, fmt.Errorf("querying ModuleCache: %w", err)
+		return nil, fmt.Errorf("querying module cache: %w", err)
 	}
 
 	return modules, nil
@@ -39,7 +38,9 @@ func purgeModuleQuery(subfolder string) string {
 		and filetype != 1
 		group by bucket, network, subfolder
 		order by youngest_file_creation_date
-	)`
+	)
+
+	select * from youngest_file where youngest_file_creation_date < now() - interval '1 month' limit 1;`
 	}
 
 	return fmt.Sprintf(`
@@ -53,6 +54,5 @@ func purgeModuleQuery(subfolder string) string {
 		order by youngest_file_creation_date
 	)
 
-	select * from youngest_file where youngest_file_creation_date < now() - interval '1 month';
-	`, subfolder)
+	select * from youngest_file where youngest_file_creation_date < now() - interval '1 month' limit 1;`, subfolder)
 }

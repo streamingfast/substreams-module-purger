@@ -21,7 +21,7 @@ import (
 )
 
 var purgerCmd = &cobra.Command{
-	Use:   "runPurger [project_id]",
+	Use:   "runPurger <project-id>",
 	Short: "Substreams module data runPurger",
 	RunE:  runPurger,
 	Args:  cobra.ExactArgs(1),
@@ -29,8 +29,8 @@ var purgerCmd = &cobra.Command{
 
 func init() {
 	purgerCmd.Flags().String("database-dsn", "postgres://localhost:5432/postgres?enable_incremental_sort=off&sslmode=disable", "Database DSN")
-	purgerCmd.Flags().String("subfolder", "", "Specify a subfolder to limit purging to modules within it.")
-	purgerCmd.Flags().Bool("force", false, "Force purge")
+	purgerCmd.Flags().String("subfolder", "", "specify a subfolder to limit purging to modules within it.")
+	purgerCmd.Flags().Bool("force", false, "force purge")
 }
 
 func runPurger(cmd *cobra.Command, args []string) error {
@@ -48,13 +48,10 @@ func runPurger(cmd *cobra.Command, args []string) error {
 	}
 
 	subfolder := sflags.MustGetString(cmd, "subfolder")
-	if subfolder == "" {
-		return fmt.Errorf("subfolder is required")
-	}
 
 	modulesCache, err := datastore.ModulesToPurge(db, subfolder)
 	if err != nil {
-		return fmt.Errorf("loading modulesCache to purge: %w", err)
+		return fmt.Errorf("loading modules cache to purge: %w", err)
 	}
 
 	zlog.Info("about to purge", zap.Int("modules_count", len(modulesCache)))
