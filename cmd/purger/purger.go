@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/streamingfast/cli"
 	"github.com/streamingfast/cli/sflags"
+	"github.com/streamingfast/substream-module-purger"
 	"go.uber.org/zap"
 	"google.golang.org/api/iterator"
 )
@@ -26,8 +27,6 @@ var purgerCmd = &cobra.Command{
 	RunE:  purger,
 	Args:  cobra.ExactArgs(1),
 }
-
-const Unlimited = math.MaxInt64
 
 func init() {
 	purgerCmd.Flags().String("database-dsn", "postgres://localhost:5432/postgres?enable_incremental_sort=off&sslmode=disable", "Database DSN")
