@@ -21,10 +21,9 @@ import (
 )
 
 var purgerCmd = &cobra.Command{
-	Use:   "runPurger <project-id>",
+	Use:   "runPurger",
 	Short: "Substreams module data runPurger",
 	RunE:  runPurger,
-	Args:  cobra.ExactArgs(1),
 }
 
 func init() {
@@ -49,6 +48,7 @@ func runPurger(cmd *cobra.Command, args []string) error {
 
 	subfolder := sflags.MustGetString(cmd, "subfolder")
 
+	zlog.Info("getting modules to purge...")
 	modulesCache, err := datastore.ModulesToPurge(db, subfolder)
 	if err != nil {
 		return fmt.Errorf("loading modules cache to purge: %w", err)
