@@ -1,11 +1,10 @@
 package main
 
 import (
-	"context"
 	"fmt"
-	"math"
 	"os"
 	"strings"
+	"substream-module-purger/datastore"
 	"sync"
 	"time"
 
@@ -16,23 +15,25 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/streamingfast/cli"
 	"github.com/streamingfast/cli/sflags"
-	"github.com/streamingfast/substream-module-purger"
+	"github.com/streamingfast/cli/utils"
 	"go.uber.org/zap"
-	"google.golang.org/api/iterator"
+	smp "substream-module-purger"
 )
 
 var purgerCmd = &cobra.Command{
-	Use:   "purger [project_id]",
-	Short: "Substreams module data purger",
-	RunE:  purger,
+	Use:   "runPurger [project_id]",
+	Short: "Substreams module data runPurger",
+	RunE:  runPurger,
 	Args:  cobra.ExactArgs(1),
 }
 
 func init() {
 	purgerCmd.Flags().String("database-dsn", "postgres://localhost:5432/postgres?enable_incremental_sort=off&sslmode=disable", "Database DSN")
+	purgerCmd.Flags().String("subfolder", "", "Specify a subfolder to limit purging to modules within it.")
+	purgerCmd.Flags().Bool("force", false, "Force purge")
 }
 
-func purger(cmd *cobra.Command, args []string) error {
+func runPurger(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
 	databaseDSN := sflags.MustGetString(cmd, "database-dsn")
@@ -43,165 +44,96 @@ func purger(cmd *cobra.Command, args []string) error {
 
 	db, err := sqlx.Open("postgres", databaseDSN)
 	if err != nil {
-		return fmt.Errorf("openning database: %w", err)
+		return fmt.Errorf("opening database: %w", err)
 	}
 
-	modules, err := moduleToPurge(db)
+	subfolder := sflags.MustGetString(cmd, "subfolder")
+	if subfolder == "" {
+		return fmt.Errorf("subfolder is required")
+	}
+
+	modulesCache, err := datastore.ModulesToPurge(db, subfolder)
 	if err != nil {
-		return fmt.Errorf("loading modules to purge: %w", err)
+		return fmt.Errorf("loading modulesCache to purge: %w", err)
 	}
 
-	zlog.Info("about to purge", zap.Int("modules_count", len(modules)))
+	zlog.Info("about to purge", zap.Int("modules_count", len(modulesCache)))
 
+	//Search order
+	//- GOOGLE_APPLICATION_CREDENTIALS environment variable
+	//- User credentials set up by using the Google Cloud CLI
+	//- The attached service account, returned by the metadata server
 	client, err := storage.NewClient(ctx)
 	if err != nil {
+		fmt.Println(cli.WarningStyle.Render("make sure, you have google authorization credentials..."))
 		return fmt.Errorf("creating storage client: %w", err)
 	}
 
-	for _, m := range modules {
-		zlog.Info("fetching file for module", zap.Stringer("module", m))
+	for _, m := range modulesCache {
 		bucket := client.Bucket(m.Bucket)
 		path := fmt.Sprintf("%s/%s", m.Network, m.Subfolder)
 
-		start := time.Now()
-		zlog.Info("starting deletion ....")
+		fileCount := 0
+		filesToPurge := make([]string, 0)
+		var totalFileSize int64
+		err = listFiles(ctx, path, bucket, func(filePath string, createdAt time.Time, fileSize int64) {
+			//validate all the date because we are not trusting the database data yet
+			if createdAt.After(m.YoungestFileCreationDate) && !strings.HasSuffix(filePath, ".partial.zst") {
+				panic(fmt.Sprintf("file %q (%q) is newer than module %q (%q)", filePath, createdAt, m, m.YoungestFileCreationDate))
+			}
+			filesToPurge = append(filesToPurge, filePath)
+			totalFileSize += fileSize
+		}, smp.Unlimited)
+		if err != nil {
+			return fmt.Errorf("listing files: %w", err)
+		}
+
+		fmt.Printf("%s:", cli.PurpleStyle.Render("List of files to purge"))
+		for _, filePath := range filesToPurge {
+			fmt.Printf("- %s\n", filePath)
+		}
+		fmt.Printf("\n%s: %d bytes (%.2f MB)\n",
+			cli.HeaderStyle.Render("Total potential savings"),
+			totalFileSize,
+			float64(totalFileSize)/(1024*1024))
+
+		force := sflags.MustGetBool(cmd, "force")
+		if !force {
+			confirm, err := utils.RunConfirmForm("Do you want to confirm the purge?")
+			if err != nil {
+				return fmt.Errorf("running confirm form: %w", err)
+			}
+
+			if !confirm {
+				return nil
+			}
+		}
 
 		jobs := make(chan job, 1000)
+		defer close(jobs)
 		var wg sync.WaitGroup
 
+		start := time.Now()
 		for w := 1; w <= 250; w++ {
 			wg.Add(1)
 			go worker(ctx, w, &wg, jobs)
 		}
 
-		fileCount := 0
-
-		cli.NoError(err, "Unable to list files")
-
-		filesToPurge := []string{}
-		err = listFiles(ctx, path, bucket, func(f string, createdAt time.Time) {
-			//validate all the date because we are not trusting the database data yet
-			if createdAt.After(m.YoungestFileCreationDate) && !strings.HasSuffix(f, ".partial.zst") {
-				panic(fmt.Sprintf("file %q (%q) is newer than module %q (%q)", f, createdAt, m, m.YoungestFileCreationDate))
-			}
-			filesToPurge = append(filesToPurge, f)
-		}, Unlimited)
-
-		for _, f := range filesToPurge {
+		zlog.Info("start purging files...")
+		for _, filePath := range filesToPurge {
 			fileCount++
-			jobs <- job{file: f}
+			jobs <- job{filePath: filePath}
 			if fileCount%1000 == 0 {
 				zlog.Info("progress", zap.Int("processed", fileCount))
 			}
 		}
-		close(jobs)
-
-		if err != nil {
-			return fmt.Errorf("listing files: %w", err)
-		}
 
 		zlog.Info("waiting for all files to be deleted", zap.Int("files_deleted", fileCount))
 		wg.Wait()
-		zlog.Info("module purging done", zap.String("path", path), zap.Duration("elapsed", time.Since(start)))
+		zlog.Info("module cache purging done", zap.String("path", path), zap.Duration("elapsed", time.Since(start)), zap.String("storage saved", fmt.Sprintf("%.2f MB",
+			float64(totalFileSize)/(1024*1024))))
 		fmt.Println()
 	}
-
-	return nil
-}
-
-var purgeableModuleQuery = `
-with youngest_file as (
-    select bucket, network, subfolder, max(created_at) as youngest_file_creation_date
-    from cost_estimator.files
-    where deleted_at is null
-    and filetype != 1
-	and subfolder = 'substreams-states/v4/efb6f81bcc9affb7f134265fb27d607bf4826fc1/states'
-    group by bucket, network, subfolder
-    order by youngest_file_creation_date
-)
-select * from youngest_file where youngest_file_creation_date < now() - interval '1 month';
-`
-
-type module struct {
-	Bucket                   string    `db:"bucket"`
-	Network                  string    `db:"network"`
-	Subfolder                string    `db:"subfolder"`
-	YoungestFileCreationDate time.Time `db:"youngest_file_creation_date"`
-}
-
-func (m *module) String() string {
-	return fmt.Sprintf("%s (%s) %s, %s", m.Bucket, m.Network, m.Subfolder, m.YoungestFileCreationDate)
-}
-
-func moduleToPurge(db *sqlx.DB) ([]*module, error) {
-	fmt.Println("Querying module to purge")
-	out := []*module{}
-
-	err := db.Select(&out, purgeableModuleQuery)
-	if err != nil {
-		return nil, fmt.Errorf("querying module: %w", err)
-	}
-
-	return out, nil
-}
-
-func listFiles(ctx context.Context, prefix string, bucket *storage.BucketHandle, f func(file string, createdAt time.Time), limit int) error {
-	ctx, cancel := context.WithTimeout(ctx, 6*time.Hour)
-	defer cancel()
-
-	zlog.Info("Listing files from bucket", zap.String("prefix", prefix))
-	it := bucket.Objects(ctx, &storage.Query{
-		Prefix: prefix,
-	})
-
-	count := 0
-	for {
-		if limit != -1 && count > limit {
-			return nil
-		}
-
-		attrs, err := it.Next()
-		if err == iterator.Done {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("listing files for prefix %q: %w", prefix, err)
-		}
-
-		count++
-		f(attrs.Name, attrs.Created)
-	}
-
-	return nil
-}
-
-type job struct {
-	file   string
-	bucket *storage.BucketHandle
-}
-
-func worker(ctx context.Context, id int, wg *sync.WaitGroup, jobs <-chan job) {
-	defer wg.Done()
-	for j := range jobs {
-		err := deleteFile(ctx, j.file, j.bucket)
-		if err != nil {
-			zlog.Info("retrying file", zap.String("file", j.file))
-			err = deleteFile(ctx, j.file, j.bucket)
-			if err != nil {
-				zlog.Info("skipping failed file", zap.String("file", j.file))
-			}
-		}
-	}
-}
-
-func deleteFile(ctx context.Context, filePath string, bucket *storage.BucketHandle) error {
-	ctx, cancel := context.WithTimeout(ctx, time.Second*5)
-	defer cancel()
-
-	//o := bucket.Object(filePath)
-	//if err := o.Delete(ctx); err != nil {
-	//	return fmt.Errorf("Object(%q).Delete: %v", filePath, err)
-	//}
 
 	return nil
 }
