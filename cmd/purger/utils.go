@@ -1,13 +1,14 @@
 package main
 
 import (
-	"cloud.google.com/go/storage"
 	"context"
 	"fmt"
-	"go.uber.org/zap"
-	"google.golang.org/api/iterator"
 	"sync"
 	"time"
+
+	"cloud.google.com/go/storage"
+	"go.uber.org/zap"
+	"google.golang.org/api/iterator"
 )
 
 type job struct {
