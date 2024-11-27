@@ -38,7 +38,7 @@ func purgeModuleQuery(network, interval string) string {
 		and filetype != 1
 		and network = '%s'
 		group by bucket, network, subfolder
-		order by youngest_file_creation_date
+		order by subfolder
 	)
 
 	select * from youngest_file where youngest_file_creation_date < now() - interval '%s';`, network, interval)
