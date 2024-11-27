@@ -21,9 +21,11 @@ func listFiles(ctx context.Context, prefix string, bucket *storage.BucketHandle,
 	defer cancel()
 
 	zlog.Info("Listing files from bucket", zap.String("prefix", prefix))
-	it := bucket.Objects(ctx, &storage.Query{
+	q := &storage.Query{
 		Prefix: prefix,
-	})
+	}
+	q.SetAttrSelection([]string{"Name", "Created", "Size"})
+	it := bucket.Objects(ctx, q)
 
 	count := 0
 	for {
@@ -46,7 +48,7 @@ func listFiles(ctx context.Context, prefix string, bucket *storage.BucketHandle,
 	return nil
 }
 
-func worker(ctx context.Context, id int, wg *sync.WaitGroup, jobs <-chan job) {
+func worker(ctx context.Context, wg *sync.WaitGroup, jobs <-chan job) {
 	defer wg.Done()
 	for j := range jobs {
 		err := deleteFile(ctx, j.filePath, j.bucket)
