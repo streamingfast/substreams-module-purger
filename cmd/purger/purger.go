@@ -250,6 +250,9 @@ func runPruneOld(cmd *cobra.Command, args []string) error {
 		if err != nil && err != io.EOF {
 			return fmt.Errorf("listing files: %w", err)
 		}
+		if len(filesToPurge) == 0 {
+			continue
+		}
 
 		if !force {
 			fmt.Printf("%s:", cli.PurpleStyle.Render("List of files to purge"))
