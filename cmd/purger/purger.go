@@ -273,7 +273,7 @@ func runPruneOld(cmd *cobra.Command, args []string) error {
 				force = true
 			}
 		}
-		zlog.Info("pruning files", zap.String("folder", path.Dir(filesToPurge[0])), zap.Int("count", len(filesToPurge)), zap.Float64("size_mib", float64(totalFileSize)/(1024*1024)))
+		zlog.Info("pruning files", zap.String("folder", path.Dir(filesToPurge[0])), zap.Int("count", len(filesToPurge)), zap.Float64("size_mib", float64(totalFileSize)/(1024*1024)), zap.Time("youngest_file_date", m.YoungestFileCreationDate))
 
 		jobs := make(chan job, 1000)
 		var wg sync.WaitGroup
