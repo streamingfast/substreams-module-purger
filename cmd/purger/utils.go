@@ -22,7 +22,8 @@ func listFiles(ctx context.Context, prefix string, bucket *storage.BucketHandle,
 
 	zlog.Info("Listing files from bucket", zap.String("prefix", prefix))
 	q := &storage.Query{
-		Prefix: prefix,
+		Prefix:     prefix,
+		Projection: storage.ProjectionNoACL,
 	}
 	q.SetAttrSelection([]string{"Name", "Created", "Size"})
 	it := bucket.Objects(ctx, q)
@@ -53,11 +54,7 @@ func worker(ctx context.Context, wg *sync.WaitGroup, jobs <-chan job) {
 	for j := range jobs {
 		err := deleteFile(ctx, j.filePath, j.bucket)
 		if err != nil {
-			zlog.Info("retrying file", zap.String("file", j.filePath))
-			err = deleteFile(ctx, j.filePath, j.bucket)
-			if err != nil {
-				zlog.Info("skipping failed file", zap.String("file", j.filePath))
-			}
+			zlog.Info("skipping failed file", zap.String("file", j.filePath))
 		}
 	}
 }
@@ -66,7 +63,7 @@ func deleteFile(ctx context.Context, filePath string, bucket *storage.BucketHand
 	ctx, cancel := context.WithTimeout(ctx, time.Second*5)
 	defer cancel()
 
-	o := bucket.Object(filePath)
+	o := bucket.Object(filePath).Retryer(storage.WithBackoff(backoff))
 	if err := o.Delete(ctx); err != nil {
 		return fmt.Errorf("Object(%q).Delete: %v", filePath, err)
 	}

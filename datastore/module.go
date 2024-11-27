@@ -18,10 +18,10 @@ func (m *ModuleCache) String() string {
 	return fmt.Sprintf("%s (%s) %s, %s", m.Bucket, m.Network, m.Subfolder, m.YoungestFileCreationDate)
 }
 
-func ModulesToPurge(db *sqlx.DB, network string, interval string) ([]*ModuleCache, error) {
+func ModulesToPurge(db *sqlx.DB, network string, maxAgeDays uint64) ([]*ModuleCache, error) {
 	var modules []*ModuleCache
 
-	err := db.Select(&modules, purgeModuleQuery(network, interval))
+	err := db.Select(&modules, purgeModuleQuery(network, fmt.Sprintf("%d days", maxAgeDays)))
 	if err != nil {
 		return nil, fmt.Errorf("querying module cache: %w", err)
 	}

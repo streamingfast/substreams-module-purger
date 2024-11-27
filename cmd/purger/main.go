@@ -14,7 +14,7 @@ func main() {
 		}
 	}()
 
-	if err := purgerCmd.Execute(); err != nil {
+	if err := rootCmd.Execute(); err != nil {
 		log.Fatal(err)
 	}
 }

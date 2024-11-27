@@ -5,7 +5,7 @@ import (
 	"github.com/streamingfast/logging"
 )
 
-var zlog, tracer = logging.ApplicationLogger("substreams-module-runPurger", "github.com/streamingfast/network-size-calculator")
+var zlog, tracer = logging.ApplicationLogger("substreams-module-purger", "github.com/streamingfast/substreams-module-purger")
 
 func init() {
 	cli.SetLogger(zlog, tracer)
