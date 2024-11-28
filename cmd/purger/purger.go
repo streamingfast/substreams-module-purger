@@ -229,7 +229,8 @@ func runPruneOld(cmd *cobra.Command, args []string) error {
 	}
 	youngestDate := time.Now().Add(-time.Duration(maxAgeDays) * time.Hour * 24)
 
-	for _, m := range modulesCache {
+	modulesLen := len(modulesCache)
+	for i, m := range modulesCache {
 		bucket := client.Bucket(m.Bucket).Retryer(storage.WithBackoff(backoff))
 		if project != "" {
 			bucket = bucket.UserProject(project)
@@ -250,9 +251,8 @@ func runPruneOld(cmd *cobra.Command, args []string) error {
 		if err != nil && err != io.EOF {
 			return fmt.Errorf("listing files: %w", err)
 		}
-		if len(filesToPurge) == 0 {
-			continue
-		}
+		filesToPurge = append(filesToPurge, fmt.Sprintf("%s/substreams.partial.spkg.zst", path.Dir(relpath))) // go up one directory above and delete the substreams.partial.spkg.zst file
+		fmt.Println(filesToPurge[len(filesToPurge)-1])
 
 		if !force {
 			fmt.Printf("%s:", cli.PurpleStyle.Render("List of files to purge"))
@@ -276,7 +276,7 @@ func runPruneOld(cmd *cobra.Command, args []string) error {
 				force = true
 			}
 		}
-		zlog.Info("pruning files", zap.String("folder", path.Dir(filesToPurge[0])), zap.Int("count", len(filesToPurge)), zap.Float64("size_mib", float64(totalFileSize)/(1024*1024)), zap.Time("youngest_file_date", m.YoungestFileCreationDate))
+		zlog.Info("pruning files", zap.String("folder", path.Dir(filesToPurge[0])), zap.Int("count", len(filesToPurge)), zap.Float64("size_mib", float64(totalFileSize)/(1024*1024)), zap.Time("youngest_file_date", m.YoungestFileCreationDate), zap.Int("i", i), zap.Int("total", modulesLen))
 
 		jobs := make(chan job, 1000)
 		var wg sync.WaitGroup
@@ -287,7 +287,6 @@ func runPruneOld(cmd *cobra.Command, args []string) error {
 			go worker(ctx, &wg, jobs)
 		}
 
-		zlog.Info("start purging files...", zap.String("folder", path.Dir(filesToPurge[0])))
 		for _, filePath := range filesToPurge {
 			fileCount++
 			jobs <- job{

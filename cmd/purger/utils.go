@@ -54,7 +54,7 @@ func worker(ctx context.Context, wg *sync.WaitGroup, jobs <-chan job) {
 	for j := range jobs {
 		err := deleteFile(ctx, j.filePath, j.bucket)
 		if err != nil {
-			zlog.Info("skipping failed file", zap.String("file", j.filePath))
+			zlog.Info("skipping failed file", zap.String("file", j.filePath), zap.Error(err))
 		}
 	}
 }
