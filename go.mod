@@ -4,6 +4,7 @@ go 1.23
 
 require (
 	cloud.google.com/go/storage v1.27.0
+	github.com/charmbracelet/huh v0.6.0
 	github.com/drone/envsubst v1.0.3
 	github.com/googleapis/gax-go/v2 v2.7.0
 	github.com/jmoiron/sqlx v1.4.0
@@ -28,7 +29,6 @@ require (
 	github.com/catppuccin/go v0.2.0 // indirect
 	github.com/charmbracelet/bubbles v0.20.0 // indirect
 	github.com/charmbracelet/bubbletea v1.1.0 // indirect
-	github.com/charmbracelet/huh v0.6.0 // indirect
 	github.com/charmbracelet/lipgloss v1.0.0 // indirect
 	github.com/charmbracelet/x/ansi v0.4.2 // indirect
 	github.com/charmbracelet/x/exp/strings v0.0.0-20240722160745-212f7b056ed0 // indirect

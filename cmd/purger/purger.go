@@ -227,7 +227,13 @@ func pruneOldE(cmd *cobra.Command, args []string) error {
 		if !daemon {
 			break
 		}
-		time.Sleep(time.Until(started.Add(24 * time.Hour)))
+		if time.Since(started) < time.Hour*24 {
+			remaining := time.Until(started.Add(24 * time.Hour))
+			zlog.Info("Waiting before next run...", zap.Duration("remaining", remaining))
+			time.Sleep(remaining)
+		} else {
+			zlog.Info("Next run will start immediately because it took more than 24 hours")
+		}
 	}
 	return nil
 }
@@ -275,7 +281,6 @@ func runPruneOld(ctx context.Context, db *sqlx.DB, network string, maxAgeDays ui
 			return fmt.Errorf("listing files: %w", err)
 		}
 		filesToPurge = append(filesToPurge, fmt.Sprintf("%s/substreams.partial.spkg.zst", path.Dir(relpath))) // go up one directory above and delete the substreams.partial.spkg.zst file
-		fmt.Println(filesToPurge[len(filesToPurge)-1])
 
 		if !force {
 			fmt.Printf("%s:", cli.PurpleStyle.Render("List of files to purge"))
