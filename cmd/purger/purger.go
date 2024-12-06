@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -39,7 +40,7 @@ var poisonedCmd = &cobra.Command{
 var oldCmd = &cobra.Command{
 	Use:   "prune-old-data",
 	Short: "remove cache based on age (uses the database)",
-	RunE:  runPruneOld,
+	RunE:  pruneOldE,
 }
 
 var backoff = gax.Backoff{
@@ -52,11 +53,12 @@ func init() {
 	rootCmd.AddCommand(oldCmd)
 	rootCmd.AddCommand(poisonedCmd)
 	rootCmd.PersistentFlags().String("project", "dfuseio-global", "requester-pay project name")
-	rootCmd.PersistentFlags().String("network", "sol-mainnet", "specify a network")
+	rootCmd.PersistentFlags().StringArray("network", []string{"sol-mainnet"}, "specify one or more networks")
 	rootCmd.PersistentFlags().Bool("force", false, "force pruning (skip confirmation)")
 
 	oldCmd.Flags().String("database-dsn", "postgres://localhost:5432/postgres?enable_incremental_sort=off&sslmode=disable", "Database DSN")
 	oldCmd.Flags().Uint64("max-age-days", 31, "max age of module caches to keep, in days")
+	oldCmd.Flags().BoolP("daemon", "d", false, "Run as daemon, pruning every day")
 
 	poisonedCmd.Flags().String("path", "{network}", "Narrow down pruning to this path (accepts '{network}')")
 	poisonedCmd.Flags().Uint64("lowest-poisoned-block", 0, "Only caches containing blocks above this will be targeted for pruning")
@@ -66,11 +68,11 @@ func init() {
 	poisonedCmd.Flags().StringSlice("module-types", []string{"output", "state", "index"}, "Only modules of these types will be targeted for pruning")
 }
 
-func getGlobalParams(cmd *cobra.Command) (project, network string, force bool, err error) {
+func getGlobalParams(cmd *cobra.Command) (project string, networks []string, force bool, err error) {
 	force = sflags.MustGetBool(cmd, "force")
-	network = sflags.MustGetString(cmd, "network")
-	if network == "" {
-		return "", "", false, fmt.Errorf("network is required (ex: eth-mainnet)")
+	networks = sflags.MustGetStringSlice(cmd, "network")
+	if networks == nil {
+		return "", nil, false, fmt.Errorf("network is required (ex: eth-mainnet)")
 	}
 	project = sflags.MustGetString(cmd, "project")
 	return
@@ -78,10 +80,14 @@ func getGlobalParams(cmd *cobra.Command) (project, network string, force bool, e
 
 func runPrunePoisoned(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	project, network, force, err := getGlobalParams(cmd)
+	project, networks, force, err := getGlobalParams(cmd)
 	if err != nil {
 		return err
 	}
+	if len(networks) != 1 {
+		return fmt.Errorf("only one network is supported for 'prune-poisoned' command")
+	}
+	network := networks[0]
 	//Search order
 	//- GOOGLE_APPLICATION_CREDENTIALS environment variable
 	//- User credentials set up by using the Google Cloud CLI
@@ -186,10 +192,10 @@ func runPrunePoisoned(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runPruneOld(cmd *cobra.Command, args []string) error {
+func pruneOldE(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
-	project, network, force, err := getGlobalParams(cmd)
+	project, networks, force, err := getGlobalParams(cmd)
 	if err != nil {
 		return err
 	}
@@ -209,7 +215,24 @@ func runPruneOld(cmd *cobra.Command, args []string) error {
 	if maxAgeDays == 0 {
 		return fmt.Errorf("max-age-days is required to be greater than 0")
 	}
+	daemon := sflags.MustGetBool(cmd, "daemon")
 
+	for {
+		started := time.Now()
+		for _, network := range networks {
+			if err := runPruneOld(ctx, db, network, maxAgeDays, project, force); err != nil {
+				return fmt.Errorf("pruning old files in %q: %w", network, err)
+			}
+		}
+		if !daemon {
+			break
+		}
+		time.Sleep(time.Until(started.Add(24 * time.Hour)))
+	}
+	return nil
+}
+
+func runPruneOld(ctx context.Context, db *sqlx.DB, network string, maxAgeDays uint64, project string, force bool) error {
 	zlog.Info("getting modules to purge... (this will take a few minutes)", zap.String("network", network), zap.Uint64("max_age_days", maxAgeDays))
 	modulesCache, err := datastore.ModulesToPurge(db, network, maxAgeDays)
 	if err != nil {
