@@ -53,7 +53,7 @@ func init() {
 	rootCmd.AddCommand(oldCmd)
 	rootCmd.AddCommand(poisonedCmd)
 	rootCmd.PersistentFlags().String("project", "dfuseio-global", "requester-pay project name")
-	rootCmd.PersistentFlags().StringArray("network", []string{"sol-mainnet"}, "specify one or more networks")
+	rootCmd.PersistentFlags().StringSlice("network", []string{"sol-mainnet"}, "specify one or more networks")
 	rootCmd.PersistentFlags().Bool("force", false, "force pruning (skip confirmation)")
 
 	oldCmd.Flags().String("database-dsn", "postgres://localhost:5432/postgres?enable_incremental_sort=off&sslmode=disable", "Database DSN")
