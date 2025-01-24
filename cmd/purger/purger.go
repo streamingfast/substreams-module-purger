@@ -34,7 +34,7 @@ var poisonedCmd = &cobra.Command{
 	Use:   "prune-poisoned-data <bucket>",
 	Short: "remove cache based on various conditions",
 	RunE:  runPrunePoisoned,
-	Args:  cobra.ExactArgs(2),
+	Args:  cobra.ExactArgs(1),
 }
 
 var oldCmd = &cobra.Command{
@@ -135,7 +135,7 @@ func runPrunePoisoned(cmd *cobra.Command, args []string) error {
 	count := 0
 	pathCount := 0
 	lastPath := ""
-	err = listFiles(ctx, lookupPath, bucket, func(filePath string, createdAt time.Time, fileSize int64) {
+	err = listFiles(ctx, lookupPath, bucket, func(filePath string, createdAt time.Time, fileSize int64) (err error) {
 		if path.Base(filePath) == "substreams.partial.spkg.zst" {
 			return // skip those silently
 		}
@@ -155,6 +155,8 @@ func runPrunePoisoned(cmd *cobra.Command, args []string) error {
 		}
 		if excludeAfter != 0 && createdAt.Unix() > excludeAfter {
 			return
+		} else {
+			fmt.Println("created", createdAt.Unix(), "is not after", excludeAfter)
 		}
 		if p := path.Dir(filePath); p != lastPath {
 			zlog.Info("going to next folder", zap.Int("previous_deleted_count", pathCount), zap.String("next folder", p))
@@ -166,10 +168,10 @@ func runPrunePoisoned(cmd *cobra.Command, args []string) error {
 			confirm, all, err := runConfirmFormWithAll(fmt.Sprintf("Delete file %q ?", filePath))
 			if err != nil {
 				zlog.Error(fmt.Sprintf("running confirm form: %s", err))
-				return
+				return err
 			}
 			if !confirm {
-				return
+				return nil
 			}
 			if all {
 				force = true
@@ -183,12 +185,14 @@ func runPrunePoisoned(cmd *cobra.Command, args []string) error {
 		count++
 		pathCount++
 
+		return nil
 	}, smp.Unlimited)
 	if err != nil && err != io.EOF {
 		return fmt.Errorf("listing files to delete: %w", err)
 	}
 	close(jobs)
 
+	wg.Wait()
 	zlog.Info("Total deleted files", zap.Int("count", count))
 
 	return nil
@@ -271,13 +275,14 @@ func runPruneOld(ctx context.Context, db *sqlx.DB, network string, maxAgeDays ui
 		fileCount := 0
 		filesToPurge := make([]string, 0)
 		var totalFileSize int64
-		err = listFiles(ctx, relpath, bucket, func(filePath string, createdAt time.Time, fileSize int64) {
+		err = listFiles(ctx, relpath, bucket, func(filePath string, createdAt time.Time, fileSize int64) error {
 			//validate all the date because we are not trusting the database data yet
 			if createdAt.After(youngestDate) && !strings.HasSuffix(filePath, ".partial.zst") {
 				panic(fmt.Sprintf("file %q (%q) is newer than module %q (%q)", filePath, createdAt, m, m.YoungestFileCreationDate))
 			}
 			filesToPurge = append(filesToPurge, filePath)
 			totalFileSize += fileSize
+			return nil
 		}, smp.Unlimited)
 		if err != nil && err != io.EOF {
 			return fmt.Errorf("listing files: %w", err)

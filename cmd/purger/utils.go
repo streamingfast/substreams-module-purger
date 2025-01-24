@@ -16,7 +16,7 @@ type job struct {
 	bucket   *storage.BucketHandle
 }
 
-func listFiles(ctx context.Context, prefix string, bucket *storage.BucketHandle, f func(filePath string, createdAt time.Time, fileSize int64), limit int) error {
+func listFiles(ctx context.Context, prefix string, bucket *storage.BucketHandle, f func(filePath string, createdAt time.Time, fileSize int64) error, limit int) error {
 	ctx, cancel := context.WithTimeout(ctx, 6*time.Hour)
 	defer cancel()
 
@@ -43,7 +43,9 @@ func listFiles(ctx context.Context, prefix string, bucket *storage.BucketHandle,
 		}
 
 		count++
-		f(attrs.Name, attrs.Created, attrs.Size)
+		if err := f(attrs.Name, attrs.Created, attrs.Size); err != nil {
+			return fmt.Errorf("applying function f() to listFiles: %w", err)
+		}
 	}
 
 	return nil
