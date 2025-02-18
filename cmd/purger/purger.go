@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -24,6 +25,8 @@ import (
 	"github.com/streamingfast/cli/sflags"
 	"go.uber.org/zap"
 )
+
+var logFileLock sync.Mutex
 
 var rootCmd = &cobra.Command{
 	Use:   "purger",
@@ -61,6 +64,8 @@ func init() {
 	oldCmd.Flags().Uint64("max-age-days", 31, "max age of module caches to keep, in days")
 	oldCmd.Flags().BoolP("daemon", "d", false, "Run as daemon, pruning every day")
 
+	poisonedCmd.Flags().BoolP("path-from-stdin", "I", false, "Causes prune-poisoned-data to read the list of paths to match from stdin.")
+	poisonedCmd.Flags().String("deleted-files-log", "", "if set, list of all deleted filenames will be written to this file")
 	poisonedCmd.Flags().String("path", "{network}", "Narrow down pruning to this path (accepts '{network}')")
 	poisonedCmd.Flags().Uint64("lowest-poisoned-block", 0, "Only caches containing blocks above this will be targeted for pruning")
 	poisonedCmd.Flags().Uint64("highest-poisoned-block", 0, "If non-zero, only caches containing blocks below this will be targeted for pruning")
@@ -101,8 +106,6 @@ func runPrunePoisoned(cmd *cobra.Command, args []string) error {
 	}
 
 	bucket := client.Bucket(args[0]).UserProject(project)
-	lookupPath := sflags.MustGetString(cmd, "path")
-	lookupPath = strings.ReplaceAll(lookupPath, "{network}", network)
 
 	excludeAfter := int64(sflags.MustGetUint64(cmd, "exclude-after-unixtimestamp"))
 	highest := sflags.MustGetUint64(cmd, "highest-poisoned-block")
@@ -127,68 +130,96 @@ func runPrunePoisoned(cmd *cobra.Command, args []string) error {
 	jobs := make(chan job, 1000)
 	var wg sync.WaitGroup
 
+	var logFile *os.File
+	if deletedFilesLog := sflags.MustGetString(cmd, "deleted-files-log"); deletedFilesLog != "" {
+		logFile, err = os.Create(deletedFilesLog)
+		if err != nil {
+			return fmt.Errorf("creating log file: %w", err)
+		}
+		defer logFile.Close()
+	}
+
 	for w := 1; w <= workers; w++ {
 		wg.Add(1)
-		go worker(ctx, &wg, jobs)
+		go worker(ctx, &wg, jobs, logFile)
+	}
+
+	var lookupPaths []string
+
+	if sflags.MustGetBool(cmd, "path-from-stdin") {
+		reader := bufio.NewReader(os.Stdin)
+		for {
+			nextPath, err := reader.ReadString('\n')
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return fmt.Errorf("reading from stdin: %w", err)
+			}
+			lookupPaths = append(lookupPaths, strings.ReplaceAll(strings.TrimSpace(nextPath), "{network}", network))
+		}
+	} else {
+		lookupPaths = append(lookupPaths, strings.ReplaceAll(sflags.MustGetString(cmd, "path"), "{network}", network))
 	}
 
 	count := 0
-	pathCount := 0
-	lastPath := ""
-	err = listFiles(ctx, lookupPath, bucket, func(filePath string, createdAt time.Time, fileSize int64) (err error) {
-		if path.Base(filePath) == "substreams.partial.spkg.zst" {
-			return // skip those silently
-		}
-		low, high, ft, err := datastore.FileInfo(filePath)
-		if err != nil {
-			zlog.Debug("skipping invalid file", zap.String("path", filePath))
-			return
-		}
-		if !targetTypes[ft] {
-			return
-		}
-		if high <= lowest {
-			return
-		}
-		if highest != 0 && low > highest {
-			return
-		}
-		if excludeAfter != 0 && createdAt.Unix() > excludeAfter {
-			return
-		} else {
-			fmt.Println("created", createdAt.Unix(), "is not after", excludeAfter)
-		}
-		if p := path.Dir(filePath); p != lastPath {
-			zlog.Info("going to next folder", zap.Int("previous_deleted_count", pathCount), zap.String("next folder", p))
-			lastPath = p
-			pathCount = 0
-		}
+	for _, lookupPath := range lookupPaths {
 
-		if !force {
-			confirm, all, err := runConfirmFormWithAll(fmt.Sprintf("Delete file %q ?", filePath))
+		pathCount := 0
+		lastPath := ""
+		err = listFiles(ctx, lookupPath, bucket, func(filePath string, createdAt time.Time, fileSize int64) (err error) {
+			if path.Base(filePath) == "substreams.partial.spkg.zst" {
+				return // skip those silently
+			}
+			low, high, ft, err := datastore.FileInfo(filePath)
 			if err != nil {
-				zlog.Error(fmt.Sprintf("running confirm form: %s", err))
-				return err
+				zlog.Debug("skipping invalid file", zap.String("path", filePath))
+				return
 			}
-			if !confirm {
-				return nil
+			if !targetTypes[ft] {
+				return
 			}
-			if all {
-				force = true
+			if high <= lowest {
+				return
 			}
-		}
+			if highest != 0 && low > highest {
+				return
+			}
+			if excludeAfter != 0 && createdAt.Unix() > excludeAfter {
+				return
+			}
+			if p := path.Dir(filePath); p != lastPath {
+				zlog.Info("going to next folder", zap.Int("previous_deleted_count", pathCount), zap.String("next folder", p))
+				lastPath = p
+				pathCount = 0
+			}
 
-		jobs <- job{
-			filePath: filePath,
-			bucket:   bucket,
-		}
-		count++
-		pathCount++
+			if !force {
+				confirm, all, err := runConfirmFormWithAll(fmt.Sprintf("Delete file %q ?", filePath))
+				if err != nil {
+					zlog.Error(fmt.Sprintf("running confirm form: %s", err))
+					return err
+				}
+				if !confirm {
+					return nil
+				}
+				if all {
+					force = true
+				}
+			}
 
-		return nil
-	}, smp.Unlimited)
-	if err != nil && err != io.EOF {
-		return fmt.Errorf("listing files to delete: %w", err)
+			jobs <- job{
+				filePath: filePath,
+				bucket:   bucket,
+			}
+			count++
+			pathCount++
+
+			return nil
+		}, smp.Unlimited)
+		if err != nil && err != io.EOF {
+			return fmt.Errorf("listing files to delete: %w", err)
+		}
 	}
 	close(jobs)
 
@@ -319,7 +350,7 @@ func runPruneOld(ctx context.Context, db *sqlx.DB, network string, maxAgeDays ui
 		start := time.Now()
 		for w := 1; w <= workers; w++ {
 			wg.Add(1)
-			go worker(ctx, &wg, jobs)
+			go worker(ctx, &wg, jobs, nil)
 		}
 
 		for _, filePath := range filesToPurge {

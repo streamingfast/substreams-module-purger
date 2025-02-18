@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -51,9 +52,14 @@ func listFiles(ctx context.Context, prefix string, bucket *storage.BucketHandle,
 	return nil
 }
 
-func worker(ctx context.Context, wg *sync.WaitGroup, jobs <-chan job) {
+func worker(ctx context.Context, wg *sync.WaitGroup, jobs <-chan job, logFile *os.File) {
 	defer wg.Done()
 	for j := range jobs {
+		if logFile != nil {
+			logFileLock.Lock()
+			logFile.WriteString(fmt.Sprintf("Deleting file %s\n", j.filePath))
+			logFileLock.Unlock()
+		}
 		err := deleteFile(ctx, j.filePath, j.bucket)
 		if err != nil {
 			zlog.Info("skipping failed file", zap.String("file", j.filePath), zap.Error(err))
