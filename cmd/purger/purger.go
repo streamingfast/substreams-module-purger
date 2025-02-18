@@ -59,6 +59,7 @@ func init() {
 	rootCmd.PersistentFlags().StringSlice("network", []string{"sol-mainnet"}, "specify one or more networks")
 	rootCmd.PersistentFlags().Bool("force", false, "force pruning (skip confirmation)")
 	rootCmd.PersistentFlags().Int("workers", 100, "number of parallel workers for delete operations")
+	rootCmd.PersistentFlags().Bool("dry-run", false, "run in dry-run, just printing files that would be deleted")
 
 	oldCmd.Flags().String("database-dsn", "postgres://localhost:5432/postgres?enable_incremental_sort=off&sslmode=disable", "Database DSN")
 	oldCmd.Flags().Uint64("max-age-days", 31, "max age of module caches to keep, in days")
@@ -74,20 +75,21 @@ func init() {
 	poisonedCmd.Flags().StringSlice("module-types", []string{"output", "state", "index"}, "Only modules of these types will be targeted for pruning")
 }
 
-func getGlobalParams(cmd *cobra.Command) (project string, networks []string, force bool, workers int, err error) {
+func getGlobalParams(cmd *cobra.Command) (project string, networks []string, force bool, workers int, dryRun bool, err error) {
 	force = sflags.MustGetBool(cmd, "force")
 	networks = sflags.MustGetStringSlice(cmd, "network")
 	if networks == nil {
-		return "", nil, false, 0, fmt.Errorf("network is required (ex: eth-mainnet)")
+		return "", nil, false, 0, false, fmt.Errorf("network is required (ex: eth-mainnet)")
 	}
 	project = sflags.MustGetString(cmd, "project")
 	workers = sflags.MustGetInt(cmd, "workers")
+	dryRun = sflags.MustGetBool(cmd, "dry-run")
 	return
 }
 
 func runPrunePoisoned(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
-	project, networks, force, workers, err := getGlobalParams(cmd)
+	project, networks, force, workers, dryRun, err := getGlobalParams(cmd)
 	if err != nil {
 		return err
 	}
@@ -141,7 +143,7 @@ func runPrunePoisoned(cmd *cobra.Command, args []string) error {
 
 	for w := 1; w <= workers; w++ {
 		wg.Add(1)
-		go worker(ctx, &wg, jobs, logFile)
+		go worker(ctx, &wg, jobs, logFile, dryRun)
 	}
 
 	var lookupPaths []string
@@ -232,7 +234,7 @@ func runPrunePoisoned(cmd *cobra.Command, args []string) error {
 func pruneOldE(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
-	project, networks, force, workers, err := getGlobalParams(cmd)
+	project, networks, force, workers, dryRun, err := getGlobalParams(cmd)
 	if err != nil {
 		return err
 	}
@@ -254,10 +256,12 @@ func pruneOldE(cmd *cobra.Command, args []string) error {
 	}
 	daemon := sflags.MustGetBool(cmd, "daemon")
 
+	cmd.SilenceUsage = true
+
 	for {
 		started := time.Now()
 		for _, network := range networks {
-			if err := runPruneOld(ctx, db, network, maxAgeDays, project, force, workers); err != nil {
+			if err := runPruneOld(ctx, db, network, maxAgeDays, project, force, workers, dryRun); err != nil {
 				return fmt.Errorf("pruning old files in %q: %w", network, err)
 			}
 		}
@@ -275,7 +279,7 @@ func pruneOldE(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runPruneOld(ctx context.Context, db *sqlx.DB, network string, maxAgeDays uint64, project string, force bool, workers int) error {
+func runPruneOld(ctx context.Context, db *sqlx.DB, network string, maxAgeDays uint64, project string, force bool, workers int, dryRun bool) error {
 	zlog.Info("getting modules to purge... (this will take a few minutes)", zap.String("network", network), zap.Uint64("max_age_days", maxAgeDays))
 	modulesCache, err := datastore.ModulesToPurge(db, network, maxAgeDays)
 	if err != nil {
@@ -302,6 +306,21 @@ func runPruneOld(ctx context.Context, db *sqlx.DB, network string, maxAgeDays ui
 			bucket = bucket.UserProject(project)
 		}
 		relpath := fmt.Sprintf("%s/%s", m.Network, m.Subfolder)
+
+		// in case a substreams is "broken" and the module cannot proceed forward, but the old data is still used, we use the 'last_used.zst' file
+		// to determine that there are still active queries on it.
+		if strings.HasSuffix(relpath, "/outputs") ||
+			strings.HasSuffix(relpath, "/index") ||
+			strings.HasSuffix(relpath, "/states") {
+
+			last_used_file := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(relpath, "/outputs"), "/index"), "/states") + "/last_used.zst"
+			if attrs, err := bucket.Object(last_used_file).Attrs(ctx); err == nil { // we IGNORE on error
+				if attrs.Updated.After(youngestDate) {
+					continue
+				}
+			}
+
+		}
 
 		fileCount := 0
 		filesToPurge := make([]string, 0)
@@ -350,7 +369,7 @@ func runPruneOld(ctx context.Context, db *sqlx.DB, network string, maxAgeDays ui
 		start := time.Now()
 		for w := 1; w <= workers; w++ {
 			wg.Add(1)
-			go worker(ctx, &wg, jobs, nil)
+			go worker(ctx, &wg, jobs, nil, dryRun)
 		}
 
 		for _, filePath := range filesToPurge {

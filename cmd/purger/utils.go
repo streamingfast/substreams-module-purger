@@ -52,13 +52,16 @@ func listFiles(ctx context.Context, prefix string, bucket *storage.BucketHandle,
 	return nil
 }
 
-func worker(ctx context.Context, wg *sync.WaitGroup, jobs <-chan job, logFile *os.File) {
+func worker(ctx context.Context, wg *sync.WaitGroup, jobs <-chan job, logFile *os.File, dryRun bool) {
 	defer wg.Done()
 	for j := range jobs {
 		if logFile != nil {
 			logFileLock.Lock()
 			logFile.WriteString(fmt.Sprintf("Deleting file %s\n", j.filePath))
 			logFileLock.Unlock()
+		}
+		if dryRun {
+			fmt.Println("dry run: skipping file", j.bucket, j.filePath)
 		}
 		err := deleteFile(ctx, j.filePath, j.bucket)
 		if err != nil {
